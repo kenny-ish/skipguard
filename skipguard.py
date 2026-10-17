@@ -28,6 +28,8 @@ class Report:
     tests: dict[str, str] = field(default_factory=dict)
     # test name -> skip reason, when the report has one
     reasons: dict[str, str] = field(default_factory=dict)
+    # test name -> the name the runner itself reported, without the package or class
+    short: dict[str, str] = field(default_factory=dict)
 
     def names(self, outcome: str) -> list[str]:
         return sorted(n for n, o in self.tests.items() if o == outcome)
@@ -54,6 +56,7 @@ def parse_go_json(lines) -> Report:
             output.setdefault(name, []).append(ev.get("Output", ""))
         elif action in ("pass", "fail", "skip"):
             report.tests[name] = {"pass": "passed", "fail": "failed", "skip": "skipped"}[action]
+            report.short[name] = test
             if action == "skip":
                 lines_out = [o.strip() for o in output.get(name, []) if o.strip()]
                 # the last line before "--- SKIP" is usually the t.Skip message
@@ -71,6 +74,7 @@ def parse_junit(text: str) -> Report:
         name = case.get("name", "")
         cls = case.get("classname")
         full = f"{cls}.{name}" if cls else name
+        report.short[full] = name
         if case.find("failure") is not None or case.find("error") is not None:
             report.tests[full] = "failed"
         elif (skip := case.find("skipped")) is not None:
@@ -90,9 +94,11 @@ def parse(text: str) -> Report:
     return parse_go_json(text.splitlines())
 
 
-def matches(name: str, pattern: str) -> bool:
-    # a pattern matches the full name or its last component (Go: Pkg.TestX/sub, JUnit: cls.name)
-    return fnmatch.fnmatchcase(name, pattern) or fnmatch.fnmatchcase(name.rsplit(".", 1)[-1], pattern)
+def matches(name: str, short: str, pattern: str) -> bool:
+    # a pattern matches the full name or the test's own name (Go: TestX/sub, JUnit: the name
+    # attribute). The full name cannot simply be split at its last dot: a subtest or parameter
+    # id such as TestParse/v1.2 or test_x[1.5] contains dots of its own.
+    return fnmatch.fnmatchcase(name, pattern) or fnmatch.fnmatchcase(short, pattern)
 
 
 def check(report: Report, require: list[str], no_skips: bool, allow_skip: list[str], min_passed: int) -> list[str]:
@@ -101,7 +107,7 @@ def check(report: Report, require: list[str], no_skips: bool, allow_skip: list[s
     if len(passed) < min_passed:
         problems.append(f"only {len(passed)} test(s) passed, expected at least {min_passed}")
     for pattern in require:
-        hits = {n: o for n, o in report.tests.items() if matches(n, pattern)}
+        hits = {n: o for n, o in report.tests.items() if matches(n, report.short.get(n, n), pattern)}
         if not hits:
             problems.append(f"required test {pattern!r} did not run at all")
         elif not any(o == "passed" for o in hits.values()):
@@ -109,7 +115,7 @@ def check(report: Report, require: list[str], no_skips: bool, allow_skip: list[s
             problems.append(f"required test {pattern!r} did not pass ({outcomes})")
     if no_skips:
         for name in report.names("skipped"):
-            if not any(matches(name, p) for p in allow_skip):
+            if not any(matches(name, report.short.get(name, name), p) for p in allow_skip):
                 why = report.reasons.get(name)
                 problems.append(f"skipped: {name}" + (f" ({why})" if why else ""))
     return problems
