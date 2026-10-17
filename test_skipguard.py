@@ -99,6 +99,17 @@ class SkipguardTests(unittest.TestCase):
         code, _ = self.run_main(stream, "--require", "TestGate/*")
         self.assertEqual(code, 0)
 
+    def test_names_with_dots_match_by_last_component(self):
+        # a subtest or parameter id can contain dots; the last part is still the test's own name
+        stream = go_events({"Action": "pass", "Package": "github.com/a/b", "Test": "TestParse/v1.2.3"})
+        code, out = self.run_main(stream, "--require", "TestParse/*")
+        self.assertEqual(code, 0, out)
+        junit = ('<testsuite><testcase classname="tests.test_parse" name="test_version[1.2.3]"/>'
+                 '<testcase classname="tests.test_parse" name="test_windows[v1.2]">'
+                 '<skipped message="windows only"/></testcase></testsuite>')
+        code, out = self.run_main(junit, "--require", "test_version*", "--no-skips", "--allow-skip", "test_windows*")
+        self.assertEqual(code, 0, out)
+
     def test_noise_lines_are_ignored(self):
         stream = "go: downloading example.com/x v1.0.0\n" + GO_STREAM + "\nFAIL\n"
         self.assertEqual(len(sg.parse(stream).tests), 2)
